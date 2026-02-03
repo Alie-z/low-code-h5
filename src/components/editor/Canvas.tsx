@@ -1,20 +1,25 @@
 import { useDroppable } from '@dnd-kit/core'
+import { useSortable } from '@dnd-kit/sortable'
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { useEffect, useState, useCallback } from 'react'
 import { clsx } from 'clsx'
 import useBuilderStore from '@/store/builder'
-import type { ComponentInstance } from '@/types'
+import type { ComponentInstance, DragData } from '@/types'
 import { ComponentRenderer } from '@/components/renderer'
 import eventEngine from '@/core/eventEngine'
 
 /**
- * 可编辑的组件包装器
+ * 可排序的组件包装器
  */
-function EditableWrapper({ 
+function SortableComponentWrapper({ 
   instance, 
-  children 
+  children,
+  parentId
 }: { 
   instance: ComponentInstance
   children: React.ReactNode 
+  parentId?: string
 }) {
   const { 
     selectedComponentIds, 
@@ -27,16 +32,42 @@ function EditableWrapper({
   const isSelected = selectedComponentIds.includes(instance.id)
   const isHovered = hoveredComponentId === instance.id && !isSelected
 
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({
+    id: instance.id,
+    data: {
+      type: 'move',
+      componentId: instance.id,
+      parentId
+    } as DragData
+  })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 1000 : undefined
+  }
+
   if (previewMode) {
     return <>{children}</>
   }
 
   return (
     <div
+      ref={setNodeRef}
+      style={style}
       className={clsx(
-        'relative group cursor-pointer transition-all',
+        'relative group cursor-move transition-all',
         isSelected && 'ring-2 ring-primary-500 ring-offset-1',
-        isHovered && 'ring-1 ring-primary-300 ring-offset-1'
+        isHovered && 'ring-1 ring-primary-300 ring-offset-1',
+        isDragging && 'shadow-lg'
       )}
       onClick={(e) => {
         e.stopPropagation()
@@ -44,11 +75,14 @@ function EditableWrapper({
       }}
       onMouseEnter={() => setHoveredComponent(instance.id)}
       onMouseLeave={() => setHoveredComponent(null)}
+      {...attributes}
+      {...listeners}
     >
       {/* 组件类型标签 */}
       {(isSelected || isHovered) && (
         <div className="absolute -top-6 left-0 bg-primary-500 text-white text-xs px-2 py-0.5 rounded text-nowrap z-10">
           {instance.type}
+          <span className="ml-1 opacity-70">⋮⋮</span>
         </div>
       )}
       
@@ -61,19 +95,22 @@ function EditableWrapper({
 }
 
 /**
- * 递归渲染组件树
+ * 可排序的组件列表
  */
-function RenderComponentTree({ 
+function SortableComponentList({ 
   components, 
+  parentId,
   onEvent 
 }: { 
   components: ComponentInstance[]
+  parentId?: string
   onEvent?: (eventType: string, componentId: string) => void
 }) {
   const { previewMode } = useBuilderStore()
+  const componentIds = components.map(c => c.id)
 
   return (
-    <>
+    <SortableContext items={componentIds} strategy={verticalListSortingStrategy}>
       {components.map(instance => {
         // 预览模式下，隐藏的组件不渲染
         if (instance.hidden && previewMode) {
@@ -93,14 +130,18 @@ function RenderComponentTree({
 
         // 编辑模式下，隐藏的组件以半透明方式显示
         return (
-          <EditableWrapper key={instance.id} instance={instance}>
+          <SortableComponentWrapper 
+            key={instance.id} 
+            instance={instance}
+            parentId={parentId}
+          >
             <div className={instance.hidden ? 'opacity-30' : ''}>
               {rendered}
             </div>
-          </EditableWrapper>
+          </SortableComponentWrapper>
         )
       })}
-    </>
+    </SortableContext>
   )
 }
 
@@ -195,7 +236,6 @@ export default function Canvas() {
 
   // 处理组件事件 - 使用事件引擎执行
   const handleEvent = useCallback((eventType: string, componentId: string) => {
-    debugger;
     const component = findComponentById(componentId)
     if (component) {
       console.log(`Event triggered: ${eventType} from component: ${componentId}`)
@@ -230,7 +270,7 @@ export default function Canvas() {
                 <span className="text-sm">拖拽组件到此处开始搭建</span>
               </div>
             ) : (
-              <RenderComponentTree 
+              <SortableComponentList 
                 components={currentPage.components}
                 onEvent={handleEvent}
               />

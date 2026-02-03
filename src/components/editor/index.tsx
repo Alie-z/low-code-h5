@@ -1,4 +1,15 @@
-import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, pointerWithin } from '@dnd-kit/core'
+import { 
+  DndContext, 
+  DragEndEvent, 
+  DragOverlay, 
+  DragStartEvent, 
+  pointerWithin,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors
+} from '@dnd-kit/core'
+import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { useState } from 'react'
 import ComponentPanel from './ComponentPanel'
 import Canvas from './Canvas'
@@ -9,11 +20,9 @@ import registry from '@/core/registry'
 import type { DragData } from '@/types'
 
 /**
- * 拖拽预览组件
+ * 拖拽预览组件 - 新建组件
  */
-function DragPreview({ componentType }: { componentType: string | null }) {
-  if (!componentType) return null
-
+function NewComponentPreview({ componentType }: { componentType: string }) {
   const meta = registry.getComponent(componentType)
   if (!meta) return null
 
@@ -26,21 +35,52 @@ function DragPreview({ componentType }: { componentType: string | null }) {
 }
 
 /**
+ * 拖拽预览组件 - 移动组件
+ */
+function MoveComponentPreview({ componentId }: { componentId: string }) {
+  const { findComponentById } = useBuilderStore()
+  const component = findComponentById(componentId)
+  
+  if (!component) return null
+  
+  const meta = registry.getComponent(component.type)
+  if (!meta) return null
+
+  return (
+    <div className="bg-primary-50 border-2 border-primary-500 rounded-lg p-4 shadow-xl opacity-95">
+      <span className="text-2xl mr-2">{meta.icon}</span>
+      <span className="text-sm font-medium text-primary-700">{meta.name}</span>
+      <span className="ml-2 text-xs text-primary-500">移动中...</span>
+    </div>
+  )
+}
+
+/**
  * 编辑器主组件
  */
 export default function Editor() {
-  const { addComponent, previewMode } = useBuilderStore()
-  const [draggedType, setDraggedType] = useState<string | null>(null)
+  const { addComponent, moveComponent, previewMode, currentPage } = useBuilderStore()
+  const [activeDragData, setActiveDragData] = useState<DragData | null>(null)
+
+  // 配置传感器
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // 需要移动8px才触发拖拽，避免点击误触
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
 
   const handleDragStart = (event: DragStartEvent) => {
     const data = event.active.data.current as DragData
-    if (data?.type === 'new' && data.componentType) {
-      setDraggedType(data.componentType)
-    }
+    setActiveDragData(data)
   }
 
   const handleDragEnd = (event: DragEndEvent) => {
-    setDraggedType(null)
+    setActiveDragData(null)
     
     const { active, over } = event
     if (!over) return
@@ -58,12 +98,51 @@ export default function Editor() {
         // 拖拽到容器组件
         const containerId = overId.replace('container-', '')
         addComponent(dragData.componentType, containerId)
+      } else {
+        // 拖拽到其他组件位置 - 插入到该组件之后
+        const overData = over.data.current as DragData
+        if (overData?.type === 'move' && overData.componentId) {
+          // 找到目标组件的索引，插入到其后面
+          const targetIndex = currentPage.components.findIndex(c => c.id === overData.componentId)
+          if (targetIndex !== -1) {
+            addComponent(dragData.componentType, overData.parentId ?? undefined, targetIndex + 1)
+          } else {
+            addComponent(dragData.componentType)
+          }
+        }
+      }
+    }
+
+    // 已有组件排序
+    if (dragData?.type === 'move' && dragData.componentId) {
+      const activeId = dragData.componentId
+      const overId = over.id as string
+      
+      if (activeId === overId) return // 没有移动
+
+      const overData = over.data.current as DragData
+      
+      // 计算新位置
+      if (overId === 'canvas-root') {
+        // 移动到画布末尾
+        moveComponent(activeId, null, currentPage.components.length)
+      } else if (overData?.type === 'move' && overData.componentId) {
+        // 移动到其他组件位置
+        const oldIndex = currentPage.components.findIndex(c => c.id === activeId)
+        const newIndex = currentPage.components.findIndex(c => c.id === overId)
+        
+        if (oldIndex !== -1 && newIndex !== -1) {
+          // 计算实际插入位置
+          const insertIndex = oldIndex < newIndex ? newIndex : newIndex
+          moveComponent(activeId, overData.parentId ?? null, insertIndex)
+        }
       }
     }
   }
 
   return (
     <DndContext
+      sensors={sensors}
       collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
@@ -78,7 +157,12 @@ export default function Editor() {
       </div>
 
       <DragOverlay>
-        <DragPreview componentType={draggedType} />
+        {activeDragData?.type === 'new' && activeDragData.componentType && (
+          <NewComponentPreview componentType={activeDragData.componentType} />
+        )}
+        {activeDragData?.type === 'move' && activeDragData.componentId && (
+          <MoveComponentPreview componentId={activeDragData.componentId} />
+        )}
       </DragOverlay>
     </DndContext>
   )
